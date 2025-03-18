@@ -1,5 +1,6 @@
 // Face-Avoiding Security Camera using ML5 FaceMesh
 // State-based approach: detect face → move away → repeat
+// If no face s detected after 200 frames, we enter scanning mode where we look back and forth.
 
 let video;
 let faceMesh;
@@ -17,14 +18,18 @@ let currentState = STATE.SEARCHING;
 
 // Servo control variables
 let horizontalAngle = 90; // Start at center position (range: 30-180)
-let verticalAngle = 45;   // Start slightly elevated (range: 0-45)
+let verticalAngle = 30;   // Start slightly elevated (range: 0-45)
 
 // Target angles for avoidance
 let targetHorizontalAngle = 90;
-let targetVerticalAngle = 45;
+let targetVerticalAngle = 30;
+
+const POSITION_HOLD_TIME = 1000; // Hold position for 1 second (1000ms) after reaching target
+let targetReachedTime = 0; // Tracks when the target position was reached
+
 
 let noFaceFrameCount = 0;
-const NO_FACE_TIMEOUT = 1000; // Frames before switching to scanning
+const NO_FACE_TIMEOUT = 200; // Frames before switching to scanning
 let scanStartTime = 0;
 const SCAN_SPEED = 0.0005; // Controls scanning speed - lower is slower
 
@@ -34,7 +39,7 @@ const SMOOTHING = 0.9;        // Movement smoothing (higher = faster)
 const HORIZONTAL_MIN = 50;    // Leftmost angle
 const HORIZONTAL_MAX = 130;   // Rightmost angle
 const VERTICAL_MIN = 0;       // Lowest angle (looking down)
-const VERTICAL_MAX = 45;      // Highest angle (looking up)
+const VERTICAL_MAX = 35;      // Highest angle (looking up)
 const RANDOM_MOVE_CHANCE = 0; // % chance to move randomly when idle
 const TARGET_REACHED_THRESHOLD = 2; // How close to target before considered reached
 
@@ -118,7 +123,8 @@ function gotList(thelist) {
     for (let i = 0; i < thelist.length; i++) {
       if (thelist[i].toLowerCase().includes('arduino') || 
           thelist[i].toLowerCase().includes('usbmodem') ||
-          thelist[i].toLowerCase().includes('com')) {
+          (thelist[i].toLowerCase().includes('com') && 
+          !thelist[i].toLowerCase().includes('bluetooth'))) { // added for mac use
         arduinoPort = i;
         break;
       }
@@ -206,20 +212,30 @@ async function draw() {
       break;
       
     case STATE.AVOIDING:
-      // In avoiding state, move toward target position
-      // Don't process new face detections until we reach the target
-      
-      // Move smoothly toward target
-      horizontalAngle = lerp(horizontalAngle, targetHorizontalAngle, SMOOTHING);
-      verticalAngle = lerp(verticalAngle, targetVerticalAngle, SMOOTHING);
-      
-      // Check if we've reached the target
-      if (hasReachedTarget()) {
-        // Switch back to searching state
-        currentState = STATE.SEARCHING;
-        noFaceFrameCount = 0; // Reset counter
-      }
-      break;
+        // In avoiding state, move toward target position
+        // Don't process new face detections until we reach the target
+        
+        // Move smoothly toward target
+        horizontalAngle = lerp(horizontalAngle, targetHorizontalAngle, SMOOTHING);
+        verticalAngle = lerp(verticalAngle, targetVerticalAngle, SMOOTHING);
+        
+        // Check if we've reached the target
+        if (hasReachedTarget()) {
+          if (targetReachedTime === 0) {
+            // Just reached target, start timer
+            targetReachedTime = millis();
+          } else if (millis() - targetReachedTime >= POSITION_HOLD_TIME) {
+            // We've held position for the required time
+            // Switch back to searching state
+            currentState = STATE.SEARCHING;
+            noFaceFrameCount = 0; // Reset counter
+            targetReachedTime = 0; // Reset timer
+          }
+        } else {
+          // Still moving, reset timer
+          targetReachedTime = 0;
+        }
+        break;
       
     case STATE.SCANNING:
       // Perform horizontal scanning while maintaining default vertical angle
