@@ -10,7 +10,8 @@ let serialConnected = false;
 // Camera states
 const STATE = {
   SEARCHING: 'searching', // Looking for faces
-  AVOIDING: 'avoiding'    // Moving to avoid a detected face
+  AVOIDING: 'avoiding',   // Moving to avoid a detected face
+  SCANNING: 'scanning'    // Horizontal scanning when idle
 };
 let currentState = STATE.SEARCHING;
 
@@ -21,6 +22,12 @@ let verticalAngle = 45;   // Start slightly elevated (range: 0-45)
 // Target angles for avoidance
 let targetHorizontalAngle = 90;
 let targetVerticalAngle = 45;
+
+let noFaceFrameCount = 0;
+const NO_FACE_TIMEOUT = 1000; // Frames before switching to scanning
+let scanStartTime = 0;
+const SCAN_SPEED = 0.0005; // Controls scanning speed - lower is slower
+
 
 // Movement parameters
 const SMOOTHING = 0.9;        // Movement smoothing (higher = faster)
@@ -34,7 +41,7 @@ const TARGET_REACHED_THRESHOLD = 2; // How close to target before considered rea
 // Serial communication parameters
 const SERIAL_RETRY_INTERVAL = 5000; // Time between reconnection attempts (ms)
 let lastSerialSendTime = 0;
-const SERIAL_SEND_INTERVAL = 25; // Send commands every 50ms to avoid flooding
+const SERIAL_SEND_INTERVAL = 50; // Send commands every 50ms to avoid flooding
 
 function preload() {
   // Load FaceMesh model
@@ -127,8 +134,8 @@ function gotList(thelist) {
 }
 
 function gotFaces(results) {
-  // Only process face detection in SEARCHING state
-  if (currentState === STATE.SEARCHING) {
+  // Process face detection in SEARCHING or SCANNING states
+  if (currentState === STATE.SEARCHING || currentState === STATE.SCANNING) {
     faces = results;
     
     // If face detected, calculate avoidance position and switch to AVOIDING state
@@ -145,6 +152,9 @@ function gotFaces(results) {
       
       // Switch to AVOIDING state
       currentState = STATE.AVOIDING;
+      
+      // Reset counter
+      noFaceFrameCount = 0;
     }
   }
 }
@@ -159,7 +169,7 @@ function sendPositionsToArduino(hPos, vPos) {
   }
 }
 
-function draw() {
+async function draw() {
   background(0);
   
   // Display the video with proper mirroring
@@ -173,10 +183,25 @@ function draw() {
   switch (currentState) {
     case STATE.SEARCHING:
       // In searching state, we're actively looking for faces
-      if (faces.length === 0 && random(100) < RANDOM_MOVE_CHANCE) {
-        targetHorizontalAngle = random(HORIZONTAL_MIN, HORIZONTAL_MAX);
-        targetVerticalAngle = random(VERTICAL_MIN, VERTICAL_MAX);
-        currentState = STATE.AVOIDING; // Switch to avoiding state for the random movement
+      if (faces.length === 0) {
+        noFaceFrameCount++;
+        
+        // Switch to scanning mode after timeout
+        if (noFaceFrameCount >= NO_FACE_TIMEOUT) {
+          scanStartTime = millis();
+          currentState = STATE.SCANNING;
+          console.log("No faces detected for a while - switching to scanning mode");
+        }
+        
+        // Random movement (if enabled)
+        if (random(100) < RANDOM_MOVE_CHANCE) {
+          targetHorizontalAngle = random(HORIZONTAL_MIN, HORIZONTAL_MAX);
+          targetVerticalAngle = random(VERTICAL_MIN, VERTICAL_MAX);
+          currentState = STATE.AVOIDING; // Switch to avoiding state for the random movement
+        }
+      } else {
+        // Reset counter when face is detected
+        noFaceFrameCount = 0;
       }
       break;
       
@@ -192,6 +217,31 @@ function draw() {
       if (hasReachedTarget()) {
         // Switch back to searching state
         currentState = STATE.SEARCHING;
+        noFaceFrameCount = 0; // Reset counter
+      }
+      break;
+      
+    case STATE.SCANNING:
+      // Perform horizontal scanning while maintaining default vertical angle
+      
+      // Calculate horizontal position using sine wave
+      const scanProgress = (millis() - scanStartTime) * SCAN_SPEED;
+      const scanPosition = sin(scanProgress);
+      
+      // Map sine wave (-1 to 1) to horizontal angle range
+      targetHorizontalAngle = map(scanPosition, -1, 1, HORIZONTAL_MIN, HORIZONTAL_MAX);
+      
+      // Move back to default vertical position
+      targetVerticalAngle = 45;
+      
+      // Apply smooth movement
+      horizontalAngle = lerp(horizontalAngle, targetHorizontalAngle, SMOOTHING * 0.5); // Slower movement
+      verticalAngle = lerp(verticalAngle, targetVerticalAngle, SMOOTHING * 0.5);
+      
+      // If we detect a face, go back to searching
+      if (faces.length > 0) {
+        currentState = STATE.SEARCHING;
+        noFaceFrameCount = 0;
       }
       break;
   }
@@ -306,4 +356,3 @@ function drawDebugInfo() {
     rect(bbox.xMin, bbox.yMin, bbox.width, bbox.height);
   }
 }
-
